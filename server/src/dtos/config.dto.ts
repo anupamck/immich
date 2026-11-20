@@ -422,6 +422,9 @@ const AdminConfigSchemaWithVisibility = z
           })
           .meta({ id: 'AdminConfigLibraryScanDto' }),
         watch: z.object({ enabled: configBool.describe('Enabled') }).meta({ id: 'AdminConfigLibraryWatchDto' }),
+        experimentalScan: z
+          .object({ enabled: configBool.describe('Scan with the experimental scanner') })
+          .meta({ id: 'AdminConfigLibraryExperimentalScanDto' }),
       })
       .meta({ id: 'AdminConfigLibraryDto' }),
     notifications: z.object({ smtp: AdminConfigSmtpSchema }).meta({ id: 'AdminConfigNotificationsDto' }),
@@ -818,6 +821,9 @@ export const defaults = Object.freeze<SystemConfig>({
       cronExpression: CronExpression.EVERY_DAY_AT_MIDNIGHT,
     },
     watch: {
+      enabled: false,
+    },
+    experimentalScan: {
       enabled: false,
     },
   },

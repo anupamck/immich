@@ -184,6 +184,10 @@ export type AdminConfigJobDto = {
     videoConversion: AdminConfigJobSettingsDto;
     workflow: AdminConfigJobSettingsDto;
 };
+export type AdminConfigLibraryExperimentalScanDto = {
+    /** Scan with the experimental scanner */
+    enabled: boolean;
+};
 export type AdminConfigLibraryScanDto = {
     /** Cron expression */
     cronExpression: string;
@@ -195,6 +199,7 @@ export type AdminConfigLibraryWatchDto = {
     enabled: boolean;
 };
 export type AdminConfigLibraryDto = {
+    experimentalScan: AdminConfigLibraryExperimentalScanDto;
     scan: AdminConfigLibraryScanDto;
     watch: AdminConfigLibraryWatchDto;
 };

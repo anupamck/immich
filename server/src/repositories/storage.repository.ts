@@ -1,3 +1,4 @@
+import { LibrarySnapshot } from '@immich/walkrs';
 import { Injectable } from '@nestjs/common';
 import { ZipArchive } from 'archiver';
 import { ChokidarOptions, watch as chokidarWatch } from 'chokidar';
@@ -28,6 +29,13 @@ export interface WatchEvents {
   onUnlink(path: string): void;
   onError(error: Error): void;
 }
+
+export type LibraryAsset = {
+  id: string;
+  originalPath: string;
+  fileModifiedAt: Date;
+  isMissing: boolean;
+};
 
 export type WatchOptions = Omit<ChokidarOptions, 'ignored'> & { ignored?: string[] };
 
@@ -274,6 +282,28 @@ export class StorageRepository {
     if (batch.length > 0) {
       yield batch;
     }
+  }
+
+  async *diffLibrary(assets: AsyncIterable<LibraryAsset[]>, walkOptions: WalkOptionsDto) {
+    const { pathsToCrawl, exclusionPatterns, includeHidden, take } = walkOptions;
+
+    const snapshot = new LibrarySnapshot();
+    for await (const batch of assets) {
+      snapshot.add({
+        ids: batch.map(({ id }) => id),
+        paths: batch.map(({ originalPath }) => originalPath),
+        modifiedAt: batch.map(({ fileModifiedAt }) => fileModifiedAt.getTime()),
+        isMissing: batch.map(({ isMissing }) => isMissing),
+      });
+    }
+
+    yield* snapshot.diff({
+      paths: pathsToCrawl,
+      exclusionPatterns,
+      includeHidden,
+      extensions: mimeTypes.getSupportedFileExtensions(),
+      batchSize: take,
+    });
   }
 
   watch(paths: string[], options: WatchOptions, events: Partial<WatchEvents>) {

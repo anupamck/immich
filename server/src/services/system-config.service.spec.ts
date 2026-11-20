@@ -237,6 +237,9 @@ const updatedConfig = Object.freeze<SystemConfig>({
     watch: {
       enabled: false,
     },
+    experimentalScan: {
+      enabled: false,
+    },
   },
   user: {
     deleteDelay: 15,

@@ -19726,6 +19726,9 @@
       },
       "AdminConfigLibraryDto": {
         "properties": {
+          "experimentalScan": {
+            "$ref": "#/components/schemas/AdminConfigLibraryExperimentalScanDto"
+          },
           "scan": {
             "$ref": "#/components/schemas/AdminConfigLibraryScanDto"
           },
@@ -19734,8 +19737,21 @@
           }
         },
         "required": [
+          "experimentalScan",
           "scan",
           "watch"
+        ],
+        "type": "object"
+      },
+      "AdminConfigLibraryExperimentalScanDto": {
+        "properties": {
+          "enabled": {
+            "description": "Scan with the experimental scanner",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
         ],
         "type": "object"
       },

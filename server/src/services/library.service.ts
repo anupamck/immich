@@ -638,6 +638,11 @@ export class LibraryService extends BaseService {
       }
     }
 
+    const { library: config } = await this.getConfig({ withCache: false });
+    if (config.experimentalScan.enabled) {
+      return this.scan(library, validImportPaths);
+    }
+
     if (validImportPaths.length === 0) {
       this.logger.warn(`No valid import paths found for library ${library.id}`);
 
@@ -687,6 +692,54 @@ export class LibraryService extends BaseService {
     return JobStatus.Success;
   }
 
+  private async scan(library: { id: string; exclusionPatterns: string[] }, importPaths: string[]) {
+    this.logger.log(`Starting experimental scan of ${importPaths.length} import path(s) for library ${library.id}...`);
+
+    const assets = batched(this.libraryRepository.streamAssetsForScan(library.id), JOBS_LIBRARY_PAGINATION_SIZE);
+    const batches = this.storageRepository.diffLibrary(assets, {
+      pathsToCrawl: importPaths,
+      includeHidden: false,
+      exclusionPatterns: library.exclusionPatterns,
+      take: JOBS_LIBRARY_PAGINATION_SIZE,
+    });
+
+    const counts = { files: 0, imported: 0, modified: 0, online: 0, offline: 0 };
+    for await (const { fileCount, newPaths, changedIds, foundIds, missingIds, errors } of batches) {
+      counts.files += fileCount;
+      counts.imported += newPaths.length;
+      counts.offline += missingIds.length;
+
+      for (const error of errors) {
+        this.logger.warn(`Unable to scan part of library ${library.id}: ${error}`);
+      }
+
+      if (newPaths.length > 0) {
+        await this.jobRepository.queue({
+          name: JobName.LibrarySyncFiles,
+          data: { libraryId: library.id, paths: newPaths, progressCounter: counts.files },
+        });
+      }
+
+      await this.assetRepository.updateAllOffline(missingIds, true);
+      const onlineIds = new Set(await this.assetRepository.updateAllOffline(foundIds, false));
+      const modifiedIds = changedIds.filter((id) => !onlineIds.has(id));
+      counts.online += onlineIds.size;
+      counts.modified += modifiedIds.length;
+
+      if (modifiedIds.length > 0) {
+        await this.queuePostSyncJobs(modifiedIds);
+      }
+    }
+
+    this.logger.log(
+      `Finished experimental scan of library ${library.id}: ${counts.files} file(s) found on disk, ${counts.imported} queued for import, ${counts.modified} modified, ${counts.online} onlined, ${counts.offline} offlined`,
+    );
+
+    await this.libraryRepository.update(library.id, { refreshedAt: new Date() });
+
+    return JobStatus.Success;
+  }
+
   @OnJob({ name: JobName.LibraryRemoveAsset, queue: QueueName.Library })
   async handleAssetRemoval(job: JobOf<JobName.LibraryRemoveAsset>): Promise<JobStatus> {
     // This is only for handling file unlink events via the file watcher
@@ -705,6 +758,11 @@ export class LibraryService extends BaseService {
   async handleQueueSyncAssets(job: JobOf<JobName.LibrarySyncAssetsQueueAll>): Promise<JobStatus> {
     const library = await this.libraryRepository.get(job.id);
     if (!library) {
+      return JobStatus.Skipped;
+    }
+
+    const { library: config } = await this.getConfig({ withCache: false });
+    if (config.experimentalScan.enabled) {
       return JobStatus.Skipped;
     }
 

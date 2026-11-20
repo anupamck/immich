@@ -632,6 +632,30 @@ export class AssetRepository {
     await this.db.updateTable('asset').set(options).where('id', '=', anyUuid(ids)).execute();
   }
 
+  async updateAllOffline(ids: string[], isOffline: boolean): Promise<string[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const assets = await this.db
+      .updateTable('asset')
+      .set((eb) => ({
+        isOffline,
+        deletedAt: eb
+          .case()
+          .when('status', '=', AssetStatus.Trashed)
+          .then(eb.ref('deletedAt'))
+          .else(isOffline ? new Date() : null)
+          .end(),
+      }))
+      .where('id', '=', anyUuid(ids))
+      .$if(!isOffline, (qb) => qb.where('status', '!=', AssetStatus.Deleted))
+      .returning('id')
+      .execute();
+
+    return assets.map(({ id }) => id);
+  }
+
   async updateByLibraryId(libraryId: string, options: Updateable<AssetTable>): Promise<void> {
     await this.db.updateTable('asset').set(options).where('libraryId', '=', asUuid(libraryId)).execute();
   }

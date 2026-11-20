@@ -112,6 +112,9 @@ The default configuration looks like this:
     }
   },
   "library": {
+    "experimentalScan": {
+      "enabled": false
+    },
     "scan": {
       "cronExpression": "0 0 * * *",
       "enabled": true

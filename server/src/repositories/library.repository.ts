@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { sql, type Insertable, type Kysely, type Updateable } from 'kysely';
 import { InjectKysely } from 'nestjs-kysely';
+import { JOBS_LIBRARY_PAGINATION_SIZE } from 'src/constants.js';
 import { DummyValue, GenerateSql } from 'src/decorators.js';
 import { LibraryStatsResponseDto } from 'src/dtos/library.dto.js';
 import { AssetType, AssetVisibility } from 'src/enum.js';
@@ -120,5 +121,13 @@ export class LibraryRepository {
 
   streamAssetIds(libraryId: string) {
     return this.db.selectFrom('asset').select(['id']).where('libraryId', '=', libraryId).stream();
+  }
+
+  streamAssetsForScan(libraryId: string) {
+    return this.db
+      .selectFrom('asset')
+      .select(['id', 'originalPath', 'fileModifiedAt', 'isOffline as isMissing'])
+      .where('libraryId', '=', libraryId)
+      .stream(JOBS_LIBRARY_PAGINATION_SIZE);
   }
 }

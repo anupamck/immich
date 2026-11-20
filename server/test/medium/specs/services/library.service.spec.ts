@@ -11,6 +11,7 @@ import type { SystemConfig } from 'src/dtos/config.dto.js';
 import { AssetFileType, AssetStatus, AssetType, JobName, JobStatus } from 'src/enum.js';
 import { AssetJobRepository } from 'src/repositories/asset-job.repository.js';
 import { AssetRepository } from 'src/repositories/asset.repository.js';
+import { ConfigRepository } from 'src/repositories/config.repository.js';
 import { CronRepository } from 'src/repositories/cron.repository.js';
 import { CryptoRepository } from 'src/repositories/crypto.repository.js';
 import { DatabaseRepository } from 'src/repositories/database.repository.js';
@@ -20,6 +21,7 @@ import { LibraryRepository } from 'src/repositories/library.repository.js';
 import { LoggingRepository } from 'src/repositories/logging.repository.js';
 import { ResourceRepository } from 'src/repositories/resource.repository.js';
 import { StorageRepository } from 'src/repositories/storage.repository.js';
+import { SystemMetadataRepository } from 'src/repositories/system-metadata.repository.js';
 import { UserRepository } from 'src/repositories/user.repository.js';
 import { WebsocketRepository } from 'src/repositories/websocket.repository.js';
 import { DB } from 'src/schema/index.js';
@@ -28,6 +30,7 @@ import { MetadataService } from 'src/services/metadata.service.js';
 import { JobItem } from 'src/types.js';
 import { systemConfigStub } from 'test/fixtures/system-config.stub.js';
 import { MediumTestContext, mediumFactory, newMediumService } from 'test/medium.factory.js';
+import { mockEnvData } from 'test/repositories/config.repository.mock.js';
 import { newUuid } from 'test/small.factory.js';
 import { getKyselyDB } from 'test/utils.js';
 
@@ -35,6 +38,7 @@ import { getKyselyDB } from 'test/utils.js';
 StorageCore.setMediaLocation('/photos');
 
 let defaultDatabase: Kysely<DB>;
+let isExperimentalScan = false;
 
 const fileModifiedAt = new Date(1_700_000_000_000);
 
@@ -49,7 +53,7 @@ class LibraryTestContext extends MediumTestContext<typeof LibraryService> {
   private metadataService: MetadataService;
   private queued: JobItem[] = [];
 
-  constructor(database: Kysely<DB>) {
+  constructor(database: Kysely<DB>, isExperimentalScan: boolean) {
     super(LibraryService, {
       database,
       real: [
@@ -61,14 +65,21 @@ class LibraryTestContext extends MediumTestContext<typeof LibraryService> {
         UserRepository,
       ],
       mock: [
+        ConfigRepository,
         CronRepository,
         DatabaseRepository,
         EventRepository,
         JobRepository,
         LoggingRepository,
         ResourceRepository,
+        SystemMetadataRepository,
         WebsocketRepository,
       ],
+    });
+
+    this.getMock(ConfigRepository).getEnv.mockReturnValue(mockEnvData({}));
+    this.getMock(SystemMetadataRepository).get.mockResolvedValue({
+      library: { experimentalScan: { enabled: isExperimentalScan } },
     });
 
     const jobs = this.getMock(JobRepository);
@@ -201,7 +212,7 @@ class LibraryTestContext extends MediumTestContext<typeof LibraryService> {
 
 // eslint-disable-next-line unicorn/no-unnecessary-parameters
 const setup = (db?: Kysely<DB>) => {
-  const ctx = new LibraryTestContext(db || defaultDatabase);
+  const ctx = new LibraryTestContext(db || defaultDatabase, isExperimentalScan);
   return { sut: ctx.sut, ctx };
 };
 
@@ -209,7 +220,14 @@ beforeAll(async () => {
   defaultDatabase = await getKyselyDB();
 });
 
-describe(LibraryService.name, () => {
+const scanners = [
+  { scanner: 'default', isExperimental: false },
+  { scanner: 'experimental', isExperimental: true },
+];
+
+describe.each(scanners)(`${LibraryService.name} with the $scanner scanner`, ({ isExperimental }) => {
+  const itFailsOnDefaultScanner = isExperimental ? it : it.fails;
+  const itSkipsOnExperimentalScanner = it.skipIf(isExperimental);
   let tempDir: string;
   let importRoot: string;
   let importPath: string;
@@ -217,6 +235,7 @@ describe(LibraryService.name, () => {
   let outsidePath: string;
 
   beforeEach(async () => {
+    isExperimentalScan = isExperimental;
     tempDir = await mkdtemp(join(tmpdir(), 'immich-library-'));
     importRoot = join(tempDir, 'libraries/offline');
     importPath = join(importRoot, 'in-path');
@@ -806,7 +825,7 @@ describe(LibraryService.name, () => {
       },
     );
 
-    it.fails('should import a file with a backslash in its name', async () => {
+    itFailsOnDefaultScanner('should import a file with a backslash in its name', async () => {
       const { ctx } = setup();
       const assetPath = await createFile(join(importPath, String.raw`back\slash.png`));
       const library = await ctx.createLibrary({ importPaths: [importPath] });
@@ -855,7 +874,8 @@ describe(LibraryService.name, () => {
       expect(jobs).toEqual([{ name: JobName.SidecarCheck, data: { id: asset.id, source: 'upload' } }]);
     });
 
-    it.skipIf(process.getuid?.() === 0).fails('should keep scanning past a folder that cannot be read', async () => {
+    const itFailsOnDefaultScannerUnlessRoot = process.getuid?.() === 0 ? it.skip : itFailsOnDefaultScanner;
+    itFailsOnDefaultScannerUnlessRoot('should keep scanning past a folder that cannot be read', async () => {
       const { ctx } = setup();
       const lockedFolder = join(importPath, 'locked');
       await createFile(join(lockedFolder, 'locked.png'));
@@ -908,6 +928,42 @@ describe(LibraryService.name, () => {
       });
       expect(jobs).toEqual([]);
       expect(events).toEqual([]);
+    });
+
+    it('should restore an offline asset whose file comes back modified without extracting it', async () => {
+      const { ctx } = setup();
+      const assetPath = await createFile(join(importPath, 'asset.png'));
+      const library = await ctx.createLibrary({ importPaths: [importPath] });
+      await ctx.scan(library.id);
+      await rm(assetPath);
+      await ctx.scan(library.id);
+
+      await createFile(assetPath);
+      const modifiedAt = new Date(1_800_000_000_000);
+      await utimes(assetPath, modifiedAt, modifiedAt);
+      const { jobs } = await ctx.scan(library.id);
+
+      await expect(ctx.getAsset(assetPath)).resolves.toEqual(expect.objectContaining({ isOffline: false }));
+      expect(jobs).toEqual([]);
+    });
+
+    it('should keep a deleted asset offline when its file comes back', async () => {
+      const { ctx } = setup();
+      const assetPath = await createFile(join(importPath, 'asset.png'));
+      const library = await ctx.createLibrary({ importPaths: [importPath] });
+      await ctx.scan(library.id);
+      const { id } = await ctx.getAsset(assetPath);
+      await rm(assetPath);
+      await ctx.scan(library.id);
+      await ctx.get(AssetRepository).updateAll([id], { status: AssetStatus.Deleted });
+
+      await createFile(assetPath);
+      const { jobs } = await ctx.scan(library.id);
+
+      await expect(ctx.getAsset(assetPath)).resolves.toEqual(
+        expect.objectContaining({ isOffline: true, status: AssetStatus.Deleted }),
+      );
+      expect(jobs).toEqual([]);
     });
 
     it('should keep a trashed asset in the trash while it goes offline and comes back', async () => {
@@ -1006,34 +1062,38 @@ describe(LibraryService.name, () => {
   });
 
   describe('handleQueueSyncAssets', () => {
-    it('should not exhaust the database pool when more libraries are checked at once than it has connections', async () => {
-      const { sut, ctx } = setup();
-      const assetRepo = ctx.get(AssetRepository);
-      // the pool has 10 connections, and each library spans more than one batch so it offlines assets mid-read
-      const libraries = await Promise.all(
-        Array.from({ length: 10 }, () => ctx.createLibrary({ importPaths: [importPath] })),
-      );
-      for (const library of libraries) {
-        const assets = Array.from({ length: JOBS_LIBRARY_PAGINATION_SIZE + 1 }, (_, index) =>
-          mediumFactory.assetInsert({
-            ownerId: library.ownerId,
-            libraryId: library.id,
-            originalPath: join(outsidePath, `${index}.jpg`),
-            isExternal: true,
-          }),
+    itSkipsOnExperimentalScanner(
+      'should not exhaust the database pool when more libraries are checked at once than it has connections',
+      async () => {
+        const { sut, ctx } = setup();
+        const assetRepo = ctx.get(AssetRepository);
+        // the pool has 10 connections, and each library spans more than one batch so it offlines assets mid-read
+        const libraries = await Promise.all(
+          Array.from({ length: 10 }, () => ctx.createLibrary({ importPaths: [importPath] })),
         );
-        for (const batch of chunk(assets, 1000)) {
-          await assetRepo.createAll(batch);
+        for (const library of libraries) {
+          const assets = Array.from({ length: JOBS_LIBRARY_PAGINATION_SIZE + 1 }, (_, index) =>
+            mediumFactory.assetInsert({
+              ownerId: library.ownerId,
+              libraryId: library.id,
+              originalPath: join(outsidePath, `${index}.jpg`),
+              isExternal: true,
+            }),
+          );
+          for (const batch of chunk(assets, 1000)) {
+            await assetRepo.createAll(batch);
+          }
         }
-      }
 
-      await expect(Promise.all(libraries.map(({ id }) => sut.handleQueueSyncAssets({ id })))).resolves.toEqual(
-        libraries.map(() => JobStatus.Success),
-      );
-      for (const { id } of libraries) {
-        await expect(ctx.getAssetPaths(id)).resolves.toEqual([]);
-      }
-    }, 60_000);
+        await expect(Promise.all(libraries.map(({ id }) => sut.handleQueueSyncAssets({ id })))).resolves.toEqual(
+          libraries.map(() => JobStatus.Success),
+        );
+        for (const { id } of libraries) {
+          await expect(ctx.getAssetPaths(id)).resolves.toEqual([]);
+        }
+      },
+      60_000,
+    );
   });
 
   describe('sidecar discovery during library scans', () => {
